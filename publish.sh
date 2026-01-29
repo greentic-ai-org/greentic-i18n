@@ -40,6 +40,25 @@ MANIFESTS=(
   "crates/greentic-i18n/Cargo.toml"
 )
 
+publish_manifest() {
+  local manifest="$1"
+  local output
+
+  if output=$(cargo publish --token "$CARGO_REGISTRY_TOKEN" --manifest-path "$manifest" 2>&1); then
+    echo "$output"
+    return 0
+  fi
+
+  if [[ $output == *"is already uploaded"* ]]; then
+    echo "$output"
+    echo "Skipping publish for $manifest because that version already exists on crates.io."
+    return 0
+  fi
+
+  echo "$output" >&2
+  return 1
+}
+
 for manifest in "${MANIFESTS[@]}"; do
-  cargo publish --token "$CARGO_REGISTRY_TOKEN" --manifest-path "$manifest"
+  publish_manifest "$manifest"
 done
