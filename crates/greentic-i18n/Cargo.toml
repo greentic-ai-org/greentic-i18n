@@ -11,8 +11,19 @@ keywords = ["cli", "i18n", "greentic"]
 readme = "../../README.md"
 
 [dependencies]
-greentic-i18n-lib = { path = "../greentic-i18n-lib", version = "0.4.0" }
+greentic-i18n-lib = { path = "../greentic-i18n-lib", version = "0.4.1" }
+greentic-i18n-translator = { path = "../greentic-i18n-translator", version = "0.4.1" }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"

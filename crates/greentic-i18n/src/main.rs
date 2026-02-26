@@ -1,10 +1,13 @@
 //! Tiny CLI that exercises the core/format helpers.
+mod cli_i18n;
+
 use std::{
     env, process,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::cli_i18n::CliI18n;
 use greentic_i18n_lib::{
     DefaultResolver, FormatFacade, I18n, I18nRequest, I18nResolver, normalize_tag,
     tag::{extension_value, parse_tag_details},
@@ -13,43 +16,103 @@ use serde_json::json;
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("error: {err}");
+        eprintln!("{err}");
         process::exit(1);
     }
 }
 fn run() -> Result<(), String> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        print_usage();
+    let raw_args = env::args().skip(1).collect::<Vec<_>>();
+    let requested_locale = requested_locale_from_args(&raw_args);
+    let i18n = CliI18n::from_request(requested_locale.as_deref())?;
+    let args = extract_global_locale(raw_args, &i18n)?;
+
+    if args.is_empty() {
+        print_usage(&i18n);
         return Ok(());
     }
 
-    match args[1].as_str() {
-        "normalize" => normalize_cmd(&args),
-        "id" => id_cmd(&args),
-        "resolve" => resolve_cmd(&args),
+    match args[0].as_str() {
+        "normalize" => normalize_cmd(&args, &i18n),
+        "id" => id_cmd(&args, &i18n),
+        "resolve" => resolve_cmd(&args, &i18n),
         "--help" | "help" => {
-            print_usage();
+            print_usage(&i18n);
             Ok(())
         }
         cmd => {
-            print_usage();
-            Err(format!("unknown command `{cmd}`"))
+            print_usage(&i18n);
+            Err(i18n.tf("cli.error.unknown_command", &[cmd]))
         }
     }
 }
 
-fn normalize_cmd(args: &[String]) -> Result<(), String> {
+fn requested_locale_from_args(args: &[String]) -> Option<String> {
+    let mut locale = None;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let token = &args[idx];
+        if token == "--locale" {
+            if let Some(value) = args.get(idx + 1)
+                && !value.starts_with('-')
+            {
+                locale = Some(value.to_string());
+            }
+            idx += 2;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--locale=") {
+            if !value.is_empty() {
+                locale = Some(value.to_string());
+            }
+            idx += 1;
+            continue;
+        }
+        idx += 1;
+    }
+    locale
+}
+
+fn extract_global_locale(args: Vec<String>, i18n: &CliI18n) -> Result<Vec<String>, String> {
+    let mut filtered = Vec::new();
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let token = &args[idx];
+        if token == "--locale" {
+            let Some(value) = args.get(idx + 1) else {
+                return Err(i18n.t("cli.error.locale_needs_value"));
+            };
+            if value.starts_with('-') {
+                return Err(i18n.t("cli.error.locale_needs_value"));
+            }
+            idx += 2;
+            continue;
+        }
+        if let Some(value) = token.strip_prefix("--locale=") {
+            if value.is_empty() {
+                return Err(i18n.t("cli.error.locale_needs_value"));
+            }
+            idx += 1;
+            continue;
+        }
+        filtered.push(token.to_string());
+        idx += 1;
+    }
+    Ok(filtered)
+}
+
+fn normalize_cmd(args: &[String], i18n: &CliI18n) -> Result<(), String> {
     let tag = args
-        .get(2)
-        .ok_or_else(|| "normalize requires a tag".to_string())?;
+        .get(1)
+        .ok_or_else(|| i18n.t("cli.error.normalize_requires_tag"))?;
     let canonical = normalize_tag(tag).map_err(|e| e.to_string())?;
     println!("{}", canonical.as_str());
     Ok(())
 }
 
-fn id_cmd(args: &[String]) -> Result<(), String> {
-    let tag = args.get(2).ok_or_else(|| "id requires a tag".to_string())?;
+fn id_cmd(args: &[String], i18n: &CliI18n) -> Result<(), String> {
+    let tag = args
+        .get(1)
+        .ok_or_else(|| i18n.t("cli.error.id_requires_tag"))?;
     let canonical = normalize_tag(tag).map_err(|e| e.to_string())?;
     let resolver: Arc<dyn I18nResolver> = Arc::new(DefaultResolver::default());
     let engine = I18n::new(resolver);
@@ -61,19 +124,19 @@ fn id_cmd(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_cmd(args: &[String]) -> Result<(), String> {
+fn resolve_cmd(args: &[String], i18n: &CliI18n) -> Result<(), String> {
     let tag = args
-        .get(2)
-        .ok_or_else(|| "resolve requires a tag".to_string())?;
+        .get(1)
+        .ok_or_else(|| i18n.t("cli.error.resolve_requires_tag"))?;
     let mut currency_arg: Option<String> = None;
-    let mut idx = 3;
+    let mut idx = 2;
     let mut json_output = false;
     while idx < args.len() {
         match args[idx].as_str() {
             "--currency" => {
                 let value = args
                     .get(idx + 1)
-                    .ok_or_else(|| "--currency needs a value".to_string())?;
+                    .ok_or_else(|| i18n.t("cli.error.currency_needs_value"))?;
                 currency_arg = Some(value.to_string());
                 idx += 2;
             }
@@ -81,7 +144,7 @@ fn resolve_cmd(args: &[String]) -> Result<(), String> {
                 json_output = true;
                 idx += 1;
             }
-            unknown => return Err(format!("unexpected argument `{unknown}`")),
+            unknown => return Err(i18n.tf("cli.error.unexpected_argument", &[unknown])),
         }
     }
 
@@ -100,7 +163,7 @@ fn resolve_cmd(args: &[String]) -> Result<(), String> {
     let example_number = profile.format_number(1234.56);
     let example_currency = profile.format_currency(42.0, currency_arg.as_deref());
     let example_datetime = profile.format_datetime(now);
-    let (example_date, example_time) = format_example_date_time(now);
+    let (example_date, example_time) = format_example_date_time(now, i18n);
     let details = parse_tag_details(&profile.tag);
     if json_output {
         let profile_obj = json!({
@@ -143,92 +206,117 @@ fn resolve_cmd(args: &[String]) -> Result<(), String> {
         println!("{json_output}");
         return Ok(());
     } else {
-        println!("tag             : {}", profile.tag.as_str());
-        println!("id              : {}", id_string);
+        println!("{}", i18n.tf("cli.resolve.tag", &[profile.tag.as_str()]));
+        println!("{}", i18n.tf("cli.resolve.id", &[&id_string]));
         println!(
-            "fallback chain  : {}",
-            fallback_chain
-                .iter()
-                .map(|tag| tag.as_str())
-                .collect::<Vec<_>>()
-                .join(" -> ")
+            "{}",
+            i18n.tf(
+                "cli.resolve.fallback_chain",
+                &[&fallback_chain
+                    .iter()
+                    .map(|tag| tag.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")]
+            )
         );
-        println!("language        : {}", details.language);
+        println!("{}", i18n.tf("cli.resolve.language", &[&details.language]));
         if let Some(script) = &details.script {
-            println!("script          : {}", script);
+            println!("{}", i18n.tf("cli.resolve.script", &[script]));
         }
         if let Some(region) = &details.region {
-            println!("region          : {}", region);
+            println!("{}", i18n.tf("cli.resolve.region", &[region]));
         }
         if !details.variants.is_empty() {
-            println!("variants        : {}", details.variants.join(", "));
+            println!(
+                "{}",
+                i18n.tf("cli.resolve.variants", &[&details.variants.join(", ")])
+            );
         }
-        println!("calendar        : {}", profile.calendar);
-        println!("number system   : {}", profile.numbering_system);
+        println!("{}", i18n.tf("cli.resolve.calendar", &[&profile.calendar]));
+        println!(
+            "{}",
+            i18n.tf("cli.resolve.number_system", &[&profile.numbering_system])
+        );
         if let Some(currency_tag) = extension_value(&details, "cu") {
-            println!("currency tag    : {}", currency_tag);
+            println!("{}", i18n.tf("cli.resolve.currency_tag", &[&currency_tag]));
         }
-        println!("timezone        : {}", profile.timezone);
-        println!("first day       : {}", profile.first_day);
-        println!("hour cycle      : {}", profile.hour_cycle);
+        println!("{}", i18n.tf("cli.resolve.timezone", &[&profile.timezone]));
+        println!(
+            "{}",
+            i18n.tf("cli.resolve.first_day", &[&profile.first_day])
+        );
+        println!(
+            "{}",
+            i18n.tf("cli.resolve.hour_cycle", &[&profile.hour_cycle])
+        );
         if let Some(collation) = &profile.collation {
-            println!("collation       : {}", collation);
+            println!("{}", i18n.tf("cli.resolve.collation", &[collation]));
         }
         if let Some(case_first) = &profile.case_first {
-            println!("case first      : {}", case_first);
+            println!("{}", i18n.tf("cli.resolve.case_first", &[case_first]));
         }
         if let Some(units) = &profile.units {
-            println!("units           : {}", units);
+            println!("{}", i18n.tf("cli.resolve.units", &[units]));
         }
+        let none_label = i18n.t("cli.resolve.none");
+        let currency_text = profile.currency.as_deref().unwrap_or(&none_label);
+        println!("{}", i18n.tf("cli.resolve.currency", &[currency_text]));
         println!(
-            "currency        : {}",
-            profile.currency.as_deref().unwrap_or("none")
+            "{}",
+            i18n.tf(
+                "cli.resolve.decimal_separator",
+                &[&profile.decimal_separator.to_string()]
+            )
         );
-        println!("decimal sep     : {}", profile.decimal_separator);
-        println!("direction       : {}", profile.direction);
-        println!("example number  : {example_number}");
-        println!("example currency: {example_currency}");
-        println!("example date    : {example_date}");
-        println!("example time    : {example_time}");
-        println!("example datetime: {example_datetime}");
+        println!(
+            "{}",
+            i18n.tf("cli.resolve.direction", &[&profile.direction.to_string()])
+        );
+        println!(
+            "{}",
+            i18n.tf("cli.resolve.example_number", &[&example_number])
+        );
+        println!(
+            "{}",
+            i18n.tf("cli.resolve.example_currency", &[&example_currency])
+        );
+        println!("{}", i18n.tf("cli.resolve.example_date", &[&example_date]));
+        println!("{}", i18n.tf("cli.resolve.example_time", &[&example_time]));
+        println!(
+            "{}",
+            i18n.tf("cli.resolve.example_datetime", &[&example_datetime])
+        );
     }
 
     Ok(())
 }
 
-fn print_usage() {
-    eprintln!("Usage: greentic-i18n <command> [args]");
-    eprintln!("Commands:");
-    eprintln!("  normalize <tag>                   Canonicalize a locale tag");
-    eprintln!("  id <tag>                          Print the stable I18nId");
-    eprintln!("  resolve <tag> [--currency CODE] [--json]   Resolve a profile and show samples");
-    eprintln!("  --help                            Show this help + tag guidance");
+fn print_usage(i18n: &CliI18n) {
+    eprintln!("{}", i18n.t("cli.usage.title"));
+    eprintln!("{}", i18n.t("cli.usage.commands_header"));
+    eprintln!("{}", i18n.t("cli.usage.command.normalize"));
+    eprintln!("{}", i18n.t("cli.usage.command.id"));
+    eprintln!("{}", i18n.t("cli.usage.command.resolve"));
+    eprintln!("{}", i18n.t("cli.usage.command.locale"));
+    eprintln!("{}", i18n.t("cli.usage.command.help"));
     eprintln!();
-    print_tag_notes();
+    print_tag_notes(i18n);
 }
 
-fn print_tag_notes() {
-    eprintln!(
-        "Tags follow BCP-47: language[-script][-region][-variants][-u-extension], and casing is normalized."
-    );
-    eprintln!("Try these commands:");
-    eprintln!("  greentic-i18n normalize en-gb");
-    eprintln!("  greentic-i18n normalize zh-hant-tw");
-    eprintln!("  greentic-i18n id fr-CA-u-ca-gregory");
-    eprintln!("  greentic-i18n resolve es --currency EUR");
+fn print_tag_notes(i18n: &CliI18n) {
+    eprintln!("{}", i18n.t("cli.notes.bcp47"));
+    eprintln!("{}", i18n.t("cli.notes.try_header"));
+    eprintln!("{}", i18n.t("cli.notes.try.normalize_en_gb"));
+    eprintln!("{}", i18n.t("cli.notes.try.normalize_zh_hant_tw"));
+    eprintln!("{}", i18n.t("cli.notes.try.id_fr_ca"));
+    eprintln!("{}", i18n.t("cli.notes.try.resolve_es_eur"));
     eprintln!();
-    eprintln!(
-        "Complex example with language/calendar/number/currency/date-time/unit/direction/script/variant/collation/timezone/first-day/hour-cycle:"
-    );
-    eprintln!(
-        "  greentic-i18n normalize ar-OM-u-ca-islamic-civil-cu-omr-nu-arabext-ss-yes-kl-kf-upper-co-phonebk-tz-Asia/Muscat-fw-sat-hc-h23-unit-meter"
-    );
-    eprintln!(
-        "  greentic-i18n resolve ar-OM-u-ca-islamic-civil-cu-omr-nu-arabext-ss-yes-kl-kf-upper-co-phonebk-tz-Asia/Muscat-fw-sat-hc-h23-unit-meter"
-    );
+    eprintln!("{}", i18n.t("cli.notes.complex_header"));
+    eprintln!("{}", i18n.t("cli.notes.complex.normalize"));
+    eprintln!("{}", i18n.t("cli.notes.complex.resolve"));
 }
 
-fn format_example_date_time(when: SystemTime) -> (String, String) {
+fn format_example_date_time(when: SystemTime, i18n: &CliI18n) -> (String, String) {
     match when.duration_since(UNIX_EPOCH) {
         Ok(duration) => {
             let secs = duration.as_secs();
@@ -243,8 +331,8 @@ fn format_example_date_time(when: SystemTime) -> (String, String) {
             )
         }
         Err(err) => (
-            format!("invalid date: {err}"),
-            format!("invalid time: {err}"),
+            i18n.tf("cli.error.invalid_date", &[&err.to_string()]),
+            i18n.tf("cli.error.invalid_time", &[&err.to_string()]),
         ),
     }
 }

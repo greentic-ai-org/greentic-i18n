@@ -1,0 +1,5 @@
+{
+  "hello": "Hello",
+  "raw_block": "raw:\n{}",
+  "cmd": "`greentic-i18n normalize en-gb`"
+}

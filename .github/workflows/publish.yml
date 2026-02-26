@@ -1,4 +1,4 @@
-name: Publish
+name: Publish And Release
 
 on:
   push:
@@ -6,37 +6,196 @@ on:
       - master
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
-  publish:
-    name: Publish crates
+  prepare:
+    name: Prepare version metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      tag_exists: ${{ steps.meta.outputs.tag_exists }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version and tag
+        id: meta
+        shell: bash
+        run: |
+          VERSION=$(grep -E '^version\s*=' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish-crates:
+    name: Publish crates.io packages
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
           path: ~/.cargo/registry
           key: cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-registry-
+
       - name: Cache cargo git
         uses: actions/cache@v3
         with:
           path: ~/.cargo/git
           key: cargo-git-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-git-
+
       - name: Cache target directory
         uses: actions/cache@v3
         with:
           path: target
           key: cargo-target-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-target-
+
       - name: Run publish pipeline
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           chmod +x ./publish.sh
           ./publish.sh
+
+  build-release-artifacts:
+    name: Build release binaries (${{ matrix.target }})
+    needs: [prepare, publish-crates]
+    if: needs.prepare.outputs.tag_exists != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive_format: tgz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive_format: tgz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive_format: tgz
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive_format: tgz
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            archive_format: zip
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive_format: zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build package
+        run: cargo build --release --package greentic-i18n --target ${{ matrix.target }}
+
+      - name: Package binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCHIVE_FORMAT: ${{ matrix.archive_format }}
+        run: |
+          if [[ "$TARGET" == *windows* ]]; then
+            EXT=.exe
+          else
+            EXT=
+          fi
+          ARCHIVE="greentic-i18n-${TARGET}"
+          if [[ "$ARCHIVE_FORMAT" == "tgz" ]]; then
+            ARCHIVE="${ARCHIVE}.tar.gz"
+          else
+            ARCHIVE="${ARCHIVE}.zip"
+          fi
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import tarfile
+          import zipfile
+          
+          target = os.environ["TARGET"]
+          archive_format = os.environ["ARCHIVE_FORMAT"]
+          ext = ".exe" if "windows" in target else ""
+          archive = f"greentic-i18n-{target}.tar.gz" if archive_format == "tgz" else f"greentic-i18n-{target}.zip"
+          
+          bin_dir = pathlib.Path("target") / target / "release"
+          files = [
+              bin_dir / f"greentic-i18n{ext}",
+              bin_dir / f"greentic-i18n-translator{ext}",
+          ]
+          for path in files:
+              if not path.exists():
+                  raise SystemExit(f"missing expected binary: {path}")
+          
+          if archive_format == "tgz":
+              with tarfile.open(archive, "w:gz") as tf:
+                  for path in files:
+                      tf.add(path, arcname=path.name)
+          else:
+              with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                  for path in files:
+                      zf.write(path, arcname=path.name)
+          print(archive)
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: greentic-i18n-${{ matrix.target }}.*
+          if-no-files-found: error
+
+  publish-github-release:
+    name: Publish GitHub release
+    needs: [prepare, build-release-artifacts]
+    if: needs.prepare.outputs.tag_exists != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create git tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ needs.prepare.outputs.tag }}"
+          git push origin "${{ needs.prepare.outputs.tag }}"
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: greentic-i18n ${{ needs.prepare.outputs.tag }}
+          files: dist/*
+          generate_release_notes: true

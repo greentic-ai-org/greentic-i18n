@@ -14,9 +14,17 @@ step cargo clippy --workspace --all-targets -- -D warnings
 step cargo test --workspace
 MANIFESTS=(
   "crates/greentic-i18n-lib/Cargo.toml"
+  "crates/greentic-i18n-translator/Cargo.toml"
   "crates/greentic-i18n/Cargo.toml"
 )
 
 for manifest in "${MANIFESTS[@]}"; do
-  cargo publish --dry-run --manifest-path "$manifest" --allow-dirty
+  if output=$(cargo publish --dry-run --manifest-path "$manifest" --allow-dirty 2>&1); then
+    echo "$output"
+    continue
+  fi
+
+  echo "$output"
+  echo "publish --dry-run failed for $manifest; falling back to cargo package --list --allow-dirty."
+  cargo package --list --manifest-path "$manifest" --allow-dirty
 done

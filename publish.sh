@@ -37,26 +37,41 @@ fi
 echo "Publishing to crates.io (token-protected)..."
 MANIFESTS=(
   "crates/greentic-i18n-lib/Cargo.toml"
+  "crates/greentic-i18n-translator/Cargo.toml"
   "crates/greentic-i18n/Cargo.toml"
 )
 
 publish_manifest() {
   local manifest="$1"
   local output
+  local attempt=1
+  local max_attempts=8
+  local sleep_seconds=15
 
-  if output=$(cargo publish --token "$CARGO_REGISTRY_TOKEN" --manifest-path "$manifest" 2>&1); then
-    echo "$output"
-    return 0
-  fi
+  while true; do
+    if output=$(cargo publish --token "$CARGO_REGISTRY_TOKEN" --manifest-path "$manifest" 2>&1); then
+      echo "$output"
+      return 0
+    fi
 
-  if [[ $output == *"is already uploaded"* ]] || [[ $output == *"already exists on crates.io index"* ]]; then
-    echo "$output"
-    echo "Skipping publish for $manifest because that version already exists on crates.io."
-    return 0
-  fi
+    if [[ $output == *"is already uploaded"* ]] || [[ $output == *"already exists on crates.io index"* ]]; then
+      echo "$output"
+      echo "Skipping publish for $manifest because that version already exists on crates.io."
+      return 0
+    fi
 
-  echo "$output" >&2
-  return 1
+    if [[ $output == *"failed to select a version for the requirement"* ]] && (( attempt < max_attempts )); then
+      echo "$output"
+      echo "Dependency version not yet visible on crates.io index for $manifest."
+      echo "Retrying in ${sleep_seconds}s (attempt ${attempt}/${max_attempts})..."
+      sleep "$sleep_seconds"
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    echo "$output" >&2
+    return 1
+  done
 }
 
 for manifest in "${MANIFESTS[@]}"; do
