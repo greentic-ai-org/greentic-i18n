@@ -79,9 +79,10 @@ Keep this list in-repo and update this document when languages are added.
 
 1. All user-visible CLI runtime text is key-based (no hardcoded English in command output/errors; clap-generated help remains English unless explicitly reworked).
 2. English source strings are centralized in one `en.json`.
-3. Non-English language files exist for every target language from `operator_cli`.
-4. Translation safety rules are enforced (`{}` placeholders, newline counts, backtick spans).
-5. CI fails on broken/stale translations.
+3. Translation resources are compiled into the CLI binary (no separate translation install step at runtime).
+4. Non-English language files exist for every target language from `operator_cli`.
+5. Translation safety rules are enforced (`{}` placeholders, newline counts, backtick spans).
+6. CI fails on broken/stale translations.
 
 ## Phase 1: Inventory all translatable CLI text
 
@@ -119,7 +120,8 @@ rg -n 'println!|eprintln!|format!\(|about\s*=|help\s*=|long_about|after_help' cr
    - selected locale -> default locale (`en`) -> key echo as last resort
 4. Add a global locale selector:
    - `--locale <tag>` flag and/or `LANG`/`LC_ALL` support.
-5. Replace all inventoried literals with key lookups.
+5. Compile translation JSON into the binary (for example with `include_str!`/`include_bytes!` and build-time registration) so runtime does not depend on externally installed language files.
+6. Replace all inventoried literals with key lookups.
 
 ### Locale detection reference implementation (reuse across repos)
 
@@ -286,6 +288,9 @@ tools/i18n.sh all
    - today it applies to runtime messages emitted by command handlers.
    - clap-generated `--help`/usage text is still English with the current derive-based clap setup.
    - if fully localized help is required, migrate to a runtime-built clap command tree with localized `about/help` strings.
+6. Packaging requirement:
+   - ship translations inside the CLI binary.
+   - do not require users to install or copy language files separately.
 
 ## Phase 6: CI and quality gates
 
@@ -313,13 +318,73 @@ tools/i18n.sh all
 3. Note:
    - `--help` remains English unless clap help localization is implemented separately.
 
+## Component i18n Compliance Contract
+
+Use this section when applying the same i18n standard to components (for example `greentic-component`), not only the CLI binary.
+
+### Compliance definition
+
+1. No user-facing literals in component runtime/QA paths (for example `src/lib.rs`, `src/qa.rs`, setup/apply error paths).
+2. All user text must be emitted from i18n keys.
+3. Fallback chain is required and deterministic:
+   - exact locale -> base language -> `en` -> key echo
+
+### Required scaffold artifacts
+
+1. `assets/i18n/en.json` exists and is the source of truth.
+2. `assets/i18n/locales.json` exists and matches the approved language list.
+3. `src/i18n.rs`, `src/qa.rs`, and embedded-bundle support (`build.rs`, `src/i18n_bundle.rs`) exist.
+4. `tools/i18n.sh` exists and is executable.
+
+### Key hygiene rules
+
+1. Stable key naming is enforced (for example `qa.*`, `errors.*`, `component.*`).
+2. No duplicate keys.
+3. No orphan keys (translation keys not referenced by code/spec).
+4. No missing keys (all referenced keys exist in `en.json`).
+
+### Placeholder and format invariants
+
+1. Placeholder counts/types must match `en.json`.
+2. Newline count/structure must be preserved.
+3. Backtick/code spans and non-translatable tokens must be preserved.
+
+### Mode and lifecycle message consistency
+
+1. If the component supports `setup`/`update`/`remove`, required keys must exist for each mode.
+2. Error/status payloads (including apply-answers surfaces) must use `msg_key` style keys, not raw English.
+
+### Automated checks
+
+1. CI includes an i18n lint step that:
+   - detects raw user-facing literals in component runtime/QA paths
+   - verifies key existence and reference integrity
+   - validates placeholders/newlines/backticks
+   - verifies required locale files exist
+2. CI fails on violations.
+
+### Runtime verification
+
+1. Run locale smoke tests for:
+   - `en`
+   - one RTL locale (`ar`)
+   - one CJK locale (`ja` or `zh`)
+   - one regional locale (`en-GB` or `ar-SA`)
+2. Verify rendered output, fallback behavior, and formatting integrity.
+
+### Component-specific definition of done
+
+1. Component passes i18n lint, validation, and runtime locale smoke tests.
+2. No hardcoded user-facing English remains in component QA/setup/runtime output paths.
+
 ## Definition of done
 
 1. No remaining hardcoded English user messages in CLI execution paths.
 2. `i18n/en.json` complete and key-stable.
-3. All target language files exist and validate.
-4. `status` reports no stale/missing keys after translation run.
-5. CI workflows enforce validation/staleness continuously.
+3. Translation resources are compiled into the binary and loaded from embedded assets at runtime.
+4. All target language files exist and validate.
+5. `status` reports no stale/missing keys after translation run.
+6. CI workflows enforce validation/staleness continuously.
 
 ## Codex execution prompt (copy/paste)
 
@@ -332,8 +397,28 @@ Requirements:
 3) Replace literals with i18n keys.
 4) Build i18n/en.json from extracted strings.
 5) Use the in-repo language list in this playbook as source-of-truth language set.
-6) Ensure language files exist for that set, then run translator translate/validate/status.
+6) Ensure language files exist for that set, compile translations into the CLI binary, then run translator translate/validate/status.
 7) Keep placeholder/newline/backtick invariants intact.
 8) Run clippy/tests/local_check and fix all issues.
 9) Summarize changed files, key naming scheme, and any unresolved strings.
+```
+
+## Component execution prompt (copy/paste)
+
+```text
+Task: Make component i18n fully compliant with the Component i18n Compliance Contract.
+
+Requirements:
+1) Inventory all user-facing strings in component runtime/QA/setup/apply paths (for example src/lib.rs, src/qa.rs).
+2) Replace user-facing literals with i18n keys and enforce stable key namespaces (qa.*, errors.*, component.*).
+3) Ensure assets/i18n/en.json is complete and is the source of truth.
+4) Ensure assets/i18n/locales.json matches the approved language list and required locale files exist.
+5) Implement/verify deterministic fallback: exact locale -> base language -> en -> key.
+6) Ensure translation resources are embedded in the component binary (build.rs + embedded bundle path) with no separate runtime install step.
+7) Enforce placeholder/newline/backtick invariants across locales.
+8) Ensure lifecycle coverage: setup/update/remove keys exist where supported.
+9) Ensure apply/status error payloads use msg_key-style keys, not raw English.
+10) Add/verify CI i18n lint checks for raw literals, key integrity, format invariants, and locale presence.
+11) Run validation + locale smoke tests in en, ar, ja/zh, and en-GB/ar-SA.
+12) Summarize changed files, unresolved strings, and any remaining compliance gaps.
 ```
